@@ -27,6 +27,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
 select,input[type=number]{font:inherit;padding:5px 7px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 input[type=range]{width:110px}
 #outWrap{margin-top:20px}
+nav.tabs{display:flex;gap:4px;padding:0 24px;border-bottom:1px solid var(--line);background:var(--card)}
+nav.tabs button{border:0;background:none;border-radius:0;padding:11px 16px;color:var(--mut);font-size:14px;border-bottom:2px solid transparent;margin-bottom:-1px}
+nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--acc);font-weight:600}
+.panel[hidden]{display:none}
+#hlist{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.item{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.item canvas{width:56px;height:56px;object-fit:cover;border-radius:4px;background:var(--bg);flex:none}
+.item .meta{flex:1;min-width:0}
+.item .nm{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .st{font-size:12px;color:var(--mut)}
+.item .st.err{color:#dc2626}
+.warn{margin-top:12px;padding:10px 12px;border-radius:8px;border:1px solid #f0c36d;background:#fdf6e3;color:#7a5b09;font-size:13px}
+@media(prefers-color-scheme:dark){.warn{background:#2a2416;border-color:#5c4a1e;color:#e8c97a}}
 #out{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff}
 .note{font-size:12px;color:var(--mut);margin-top:8px}
 .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px;padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
@@ -37,7 +50,12 @@ input[type=range]{width:110px}
   <h1>ID 2-in-1</h1>
   <span class="sub">Drop two scans (front &amp; back) → auto-cropped and placed on one page. Everything stays in your browser.</span>
 </header>
+<nav class="tabs" role="tablist">
+  <button role="tab" id="tabCard" aria-selected="true" aria-controls="panelCard">ID 2-in-1</button>
+  <button role="tab" id="tabHeic" aria-selected="false" aria-controls="panelHeic">HEIC → JPEG</button>
+</nav>
 <main>
+<section class="panel" id="panelCard" role="tabpanel">
   <div class="grid">
     <div class="card">
       <h2>Front</h2>
@@ -74,6 +92,22 @@ input[type=range]{width:110px}
   <div id="outWrap"><canvas id="out"></canvas>
     <p class="note">Auto-crop finds the card by scanning in from the scanner background (usually white/black) and trims to the first strong edge, then squares up the result. If it grabs too much or too little, nudge <em>Edge sens.</em> and hit Re-crop.</p>
   </div>
+</section>
+
+<section class="panel" id="panelHeic" role="tabpanel" hidden>
+  <div class="card">
+    <h2>HEIC / HEIF → JPEG</h2>
+    <div class="drop" id="dropH" style="min-height:130px"><span>Click, drop, or paste HEIC files<br><small>Multiple files supported</small></span></div>
+    <div class="row">
+      <label class="f">Quality <input type="range" id="hq" min="50" max="100" value="92"> <span id="hqv">92</span></label>
+      <label class="f">Max edge <input type="number" id="hmax" value="0" step="100" min="0" style="width:76px"> px <small>(0 = original)</small></label>
+      <button id="hsave" disabled>Download all</button>
+      <button id="hclear" disabled>Clear</button>
+    </div>
+    <div id="hlist"></div>
+    <p class="note">Conversion runs entirely in your browser using a bundled libheif build &mdash; nothing is uploaded. Large files take a moment to decode.</p>
+  </div>
+</section>
 </main>
 <script>
 const S={A:null,B:null}; // {img, canvas(cropped), rot}
@@ -90,7 +124,10 @@ function setupDrop(key){
 setupDrop('A');setupDrop('B');
 
 document.addEventListener('paste',e=>{
-  const f=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));
+  const fs=[...(e.clipboardData?.files||[])];
+  if(!fs.length) return;
+  if(!$('#panelHeic').hidden){ convertHeic(fs); return; } // HEIC tab is open
+  const f=fs.find(f=>f.type.startsWith('image/'));
   if(f) load(S.A?'B':'A',f);
 });
 
@@ -213,6 +250,130 @@ $('#build').onclick=build;
 $('#png').onclick=()=>{
   $('#out').toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='id-2-in-1.png';a.click();},'image/png');
 };
+
+// --- tabs -----------------------------------------------------------------
+function showTab(which){
+  const card=which==='card';
+  $('#panelCard').hidden=!card; $('#panelHeic').hidden=card;
+  $('#tabCard').setAttribute('aria-selected',card);
+  $('#tabHeic').setAttribute('aria-selected',!card);
+  if(!card) ensureHeif(); // lazy-load the decoder only when this tab is opened
+}
+$('#tabCard').onclick=()=>showTab('card');
+$('#tabHeic').onclick=()=>showTab('heic');
+
+// --- HEIC -> JPEG ---------------------------------------------------------
+let heifLib=null, heifLoading=null;
+function ensureHeif(){
+  if(heifLib||heifLoading) return heifLoading||Promise.resolve(heifLib);
+  heifLoading=(async()=>{
+    // this libheif build loads its wasm synchronously, so hand it the bytes up front
+    const [, wasmBinary] = await Promise.all([
+      new Promise((res,rej)=>{
+        const sc=document.createElement('script');
+        sc.src='vendor/libheif.js';
+        sc.onload=res;
+        sc.onerror=()=>rej(new Error('could not load vendor/libheif.js'));
+        document.head.appendChild(sc);
+      }),
+      fetch('vendor/libheif.wasm').then(r=>{
+        if(!r.ok) throw new Error('could not load vendor/libheif.wasm');
+        return r.arrayBuffer();
+      })
+    ]);
+    const factory=window.libheif;
+    if(typeof factory!=='function') throw new Error('libheif did not register');
+    heifLib=await factory({wasmBinary});
+    return heifLib;
+  })();
+  heifLoading.catch(()=>{heifLoading=null}); // let a later attempt retry
+  return heifLoading;
+}
+
+// Decode via bundled libheif; fall back to the browser's own decoder (Safari).
+async function decodeHeic(file){
+  let libErr=null;
+  try{
+    const lib=await ensureHeif();
+    const dec=new lib.HeifDecoder();
+    const imgs=dec.decode(new Uint8Array(await file.arrayBuffer()));
+    if(imgs&&imgs.length){
+      const im=imgs[0], w=im.get_width(), h=im.get_height();
+      const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+      const ctx=cv.getContext('2d'), id=ctx.createImageData(w,h);
+      await new Promise((r,j)=>im.display(id,d=>d?r():j(new Error('decode failed'))));
+      ctx.putImageData(id,0,0);
+      if(im.free)im.free();
+      return cv;
+    }
+  }catch(e){ libErr=e; /* fall through to the browser's own decoder */ }
+  // native path (Safari decodes HEIC itself)
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((r,j)=>{const i=new Image();i.onload=()=>r(i);
+      // the bundled decoder already ran; if it loaded fine, the file itself is the problem
+      i.onerror=()=>j(new Error(heifLib?'not a readable HEIC file':(libErr&&libErr.message)||'could not decode'));
+      i.src=url});
+    const cv=document.createElement('canvas'); cv.width=img.naturalWidth; cv.height=img.naturalHeight;
+    cv.getContext('2d').drawImage(img,0,0);
+    return cv;
+  } finally { URL.revokeObjectURL(url); }
+}
+
+const HQ=[]; // {name, blob, url}
+function heicRow(name){
+  const row=document.createElement('div'); row.className='item';
+  row.innerHTML='<canvas width="56" height="56"></canvas><div class="meta"><div class="nm"></div><div class="st">decoding…</div></div>';
+  row.querySelector('.nm').textContent=name;
+  $('#hlist').appendChild(row); return row;
+}
+
+async function convertHeic(files){
+  for(const f of files){
+    const row=heicRow(f.name);
+    const st=row.querySelector('.st');
+    try{
+      let cv=await decodeHeic(f);
+      const mx=Math.max(0,+$('#hmax').value||0);
+      if(mx&&Math.max(cv.width,cv.height)>mx){
+        const sc=mx/Math.max(cv.width,cv.height);
+        const o=document.createElement('canvas');
+        o.width=Math.round(cv.width*sc); o.height=Math.round(cv.height*sc);
+        o.getContext('2d').drawImage(cv,0,0,o.width,o.height); cv=o;
+      }
+      const q=+$('#hq').value/100;
+      const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',q));
+      const thumb=row.querySelector('canvas'), tc=thumb.getContext('2d');
+      const s2=Math.max(56/cv.width,56/cv.height);
+      tc.drawImage(cv,(56-cv.width*s2)/2,(56-cv.height*s2)/2,cv.width*s2,cv.height*s2);
+      const name=f.name.replace(/\.(heic|heif)$/i,'')+'.jpg';
+      HQ.push({name,blob});
+      const sz=blob.size<1048576?(blob.size/1024).toFixed(0)+' KB':(blob.size/1048576).toFixed(2)+' MB';
+      st.textContent=cv.width+'×'+cv.height+' · '+sz;
+      const a=document.createElement('button'); a.textContent='Save';
+      a.onclick=()=>{const u=URL.createObjectURL(blob);const l=document.createElement('a');l.href=u;l.download=name;l.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};
+      row.appendChild(a);
+    }catch(e){
+      st.className='st err';
+      st.textContent=String(e&&e.message||e).slice(0,120);
+    }
+    $('#hsave').disabled=!HQ.length; $('#hclear').disabled=!$('#hlist').children.length;
+  }
+}
+
+(function(){
+  const el=$('#dropH');
+  const pick=fs=>{const l=[...fs].filter(f=>/\.(heic|heif)$/i.test(f.name)||/heic|heif/i.test(f.type));convertHeic(l.length?l:[...fs])};
+  el.addEventListener('click',()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.accept='.heic,.heif,image/heic,image/heif';i.onchange=()=>i.files.length&&pick(i.files);i.click()});
+  el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('over')});
+  el.addEventListener('dragleave',()=>el.classList.remove('over'));
+  el.addEventListener('drop',e=>{e.preventDefault();el.classList.remove('over');pick(e.dataTransfer.files)});
+  $('#hq').oninput=()=>$('#hqv').textContent=$('#hq').value;
+  $('#hclear').onclick=()=>{$('#hlist').innerHTML='';HQ.length=0;$('#hsave').disabled=true;$('#hclear').disabled=true};
+  $('#hsave').onclick=()=>HQ.forEach((it,i)=>setTimeout(()=>{
+    const u=URL.createObjectURL(it.blob);const l=document.createElement('a');l.href=u;l.download=it.name;l.click();setTimeout(()=>URL.revokeObjectURL(u),1000);
+  },i*300));
+})();
 
 // minimal single-image PDF writer (no deps)
 $('#pdf').onclick=()=>{

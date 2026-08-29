@@ -1,24 +1,28 @@
 # ID 2-in-1
 
-Combine two scans of an ID card (front and back) onto a single printable page.
+Two browser-based image tools that never upload your files:
+
+1. **ID 2-in-1** — combine two scans of an ID card (front and back) onto a single printable page.
+2. **HEIC → JPEG** — batch-convert iPhone HEIC/HEIF photos to JPEG.
 
 **[Open the tool →](https://pujunru.github.io/id-2-in-1/)**
 
 ## Privacy
 
-**Your images never leave your computer.** This is a single static HTML file with
-no build step, no dependencies, no server, and no network requests of any kind —
-no CDN, no analytics, no telemetry, no fonts. All image processing happens in your
-browser via the Canvas API, and the PNG/PDF files are generated locally.
+**Your images never leave your computer.** There is no server, no upload, no
+analytics, no telemetry, and no third-party CDN. All processing happens locally in
+your browser via the Canvas API, and the output files are generated on your machine.
 
-You can verify this yourself: read `index.html` (it's ~300 lines), or open your
-browser's Network tab while using it and confirm nothing is sent.
+The only network requests the page can make are for its own two local files,
+`vendor/libheif.js` and `vendor/libheif.wasm`, and only when you open the
+HEIC tab. The ID 2-in-1 tool loads nothing at all.
 
-Because it's fully self-contained, you can also just download `index.html` and open
-it directly from disk, with your network turned off if you like. This is the
-recommended approach for sensitive documents such as passports or ID cards.
+You can verify this yourself by opening your browser's Network tab while using it.
 
-## Usage
+For sensitive documents such as passports or ID cards, the safest option is to
+download this repo and open `index.html` from disk — it works fully offline.
+
+## Usage — ID 2-in-1
 
 1. Scan both sides of the card and save them as images.
 2. Drop, paste, or click to load them into the Front and Back panels.
@@ -60,9 +64,33 @@ yields a bounding box with some background in the corners. Straighten the card o
 the glass for best results. If detection fails, the full image is kept rather than
 returning a bad crop.
 
+## HEIC → JPEG
+
+Drop, paste, or pick one or more `.heic` / `.heif` files. Each is decoded and
+converted to JPEG, then saved individually or all at once.
+
+| Option | Notes |
+| --- | --- |
+| **Quality** | JPEG quality, 50–100. Default 92. |
+| **Max edge** | Downscale so the longest side is at most this many pixels. 0 keeps the original size. |
+
+Because browsers other than Safari cannot decode HEIC natively, a build of
+[libheif](https://github.com/strukturag/libheif) is bundled in `vendor/` and used
+to decode in-browser. It is loaded lazily — only when you open this tab — so the
+ID 2-in-1 tool stays instant. On Safari, the system decoder is used as a fallback.
+
+Note that JPEG has no transparency and is lossy, and that converted files keep no
+EXIF metadata — which also means location data in the original is not carried over.
+
 ## Browser support
 
 Any current browser. No installation required.
+
+## Third-party code
+
+`vendor/libheif.js` and `vendor/libheif.wasm` are unmodified build artifacts from
+[libheif-js](https://www.npmjs.com/package/libheif-js) v1.19.8, distributed under
+the LGPL. See `vendor/LICENSE.libheif`. Everything else is MIT.
 
 ## License
 
