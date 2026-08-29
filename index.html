@@ -72,6 +72,8 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
         <label class="f"><input type="checkbox" id="manA"> Manual crop</label>
         <label class="f autoA">Edge sens. <input type="range" id="thA" min="4" max="60" value="18"></label>
         <button data-re="A" class="autoA">Re-crop</button>
+        <button data-apply="A" class="manA" hidden>Apply crop</button>
+        <button data-edit="A" class="manA" hidden>Edit crop</button>
         <button data-reset="A" class="manA" hidden>Reset to full</button>
       </div>
     </div>
@@ -83,6 +85,8 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
         <label class="f"><input type="checkbox" id="manB"> Manual crop</label>
         <label class="f autoB">Edge sens. <input type="range" id="thB" min="4" max="60" value="18"></label>
         <button data-re="B" class="autoB">Re-crop</button>
+        <button data-apply="B" class="manB" hidden>Apply crop</button>
+        <button data-edit="B" class="manB" hidden>Edit crop</button>
         <button data-reset="B" class="manB" hidden>Reset to full</button>
       </div>
     </div>
@@ -127,7 +131,13 @@ const $=s=>document.querySelector(s);
 
 function setupDrop(key){
   const el=$('#drop'+key);
-  el.addEventListener('click',()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>i.files[0]&&load(key,i.files[0]);i.click();});
+  el.addEventListener('click',e=>{
+    // a crop drag (or any click inside the crop editor) must not open the file picker
+    if(el.dataset.noPick==='1'){el.dataset.noPick='';return;}
+    if(e.target.closest&&e.target.closest('.cropwrap'))return;
+    const i=document.createElement('input');i.type='file';i.accept='image/*';
+    i.onchange=()=>i.files[0]&&load(key,i.files[0]);i.click();
+  });
   el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('over')});
   el.addEventListener('dragleave',()=>el.classList.remove('over'));
   el.addEventListener('drop',e=>{e.preventDefault();el.classList.remove('over');const f=[...e.dataTransfer.files].find(f=>f.type.startsWith('image/'));if(f)load(key,f);});
@@ -233,13 +243,15 @@ function recrop(key,mode){
 
 function render(key){
   const st=S[key], src=srcCanvas(key), manual=$('#man'+key).checked;
+  const editing=manual&&st.editing;
   const host=$('#drop'+key);
   host.innerHTML='';
   const wrap=document.createElement('div');
-  wrap.className='cropwrap'+(manual?' manual':'');
+  wrap.className='cropwrap'+(editing?' manual':'');
 
-  // in manual mode show the WHOLE scan so the box can be placed anywhere
-  const shown=manual?src:st.canvas;
+  // while editing show the WHOLE scan so the box can be placed anywhere;
+  // once applied, show the cropped result instead
+  const shown=editing?src:st.canvas;
   const sc=Math.min(420/shown.width,260/shown.height,1);
   const view=document.createElement('canvas');
   view.width=Math.round(shown.width*sc); view.height=Math.round(shown.height*sc);
@@ -250,7 +262,22 @@ function render(key){
 
   document.querySelectorAll('.auto'+key).forEach(e=>e.hidden=manual);
   document.querySelectorAll('.man'+key).forEach(e=>e.hidden=!manual);
-  if(manual) attachBox(key,wrap);
+  // Apply only while editing; Edit/Reset only once a crop is committed
+  const ab=document.querySelector('[data-apply='+key+']');
+  const eb=document.querySelector('[data-edit='+key+']');
+  const rb=document.querySelector('[data-reset='+key+']');
+  if(manual){ ab.hidden=!editing; eb.hidden=editing; rb.hidden=!editing; }
+  if(st.hint) st.hint.remove();
+  if(manual){
+    const p=document.createElement('div');
+    p.className='st'+(editing?'':' done');
+    p.style.cssText='font-size:12px;margin-top:8px;color:'+(editing?'var(--mut)':'#16a34a');
+    p.textContent=editing
+      ? 'Drag to adjust, then press Apply crop.'
+      : '✓ Cropped to '+st.canvas.width+'×'+st.canvas.height+' px';
+    host.parentNode.insertBefore(p,host.nextSibling); st.hint=p;
+  }
+  if(editing) attachBox(key,wrap);
 }
 
 function attachBox(key,wrap){
@@ -313,7 +340,11 @@ function attachBox(key,wrap){
     }
     st.rect=clamp(r); paint();
   });
-  const stop=()=>{ if(!drag)return; drag=null; applyCrop(key); };
+  const stop=()=>{ if(!drag)return; drag=null;
+    $('#drop'+key).dataset.noPick='1'; // swallow the click this drag will emit
+    applyCrop(key);
+    if(S[key].hint) S[key].hint.textContent='Drag to adjust, then press Apply crop.';
+  };
   wrap.addEventListener('pointerup',stop);
   wrap.addEventListener('pointercancel',stop);
 }
@@ -323,6 +354,7 @@ document.querySelectorAll('[data-rot]').forEach(b=>b.onclick=e=>{
   const before=srcCanvas(k);
   S[k].rot=(S[k].rot+90)%360;
   if($('#man'+k).checked&&S[k].rect){
+    // keep whichever state we were in (editing vs applied)
     // rotate the rect 90° CW with the image so the selection follows the card
     const r=S[k].rect;
     S[k].rect={x:before.height-(r.y+r.h), y:r.x, w:r.h, h:r.w};
@@ -330,12 +362,27 @@ document.querySelectorAll('[data-rot]').forEach(b=>b.onclick=e=>{
   } else recrop(k);
 });
 document.querySelectorAll('[data-re]').forEach(b=>b.onclick=()=>recrop(b.dataset.re));
-document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>recrop(b.dataset.reset,'full'));
+document.querySelectorAll('[data-apply]').forEach(b=>b.onclick=()=>{
+  const k=b.dataset.apply; if(!S[k])return;
+  applyCrop(k); S[k].editing=false; render(k);
+});
+document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{
+  const k=b.dataset.edit; if(!S[k])return;
+  S[k].editing=true; render(k);
+});
+document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>{
+  const k=b.dataset.reset; if(!S[k])return;
+  const src=srcCanvas(k);
+  S[k].rect={x:0,y:0,w:src.width,h:src.height};
+  applyCrop(k); render(k);
+});
 $('#thA').oninput=()=>recrop('A'); $('#thB').oninput=()=>recrop('B');
 ['A','B'].forEach(k=>$('#man'+k).onchange=()=>{
-  if(!S[k]){document.querySelectorAll('.auto'+k).forEach(e=>e.hidden=$('#man'+k).checked);
-            document.querySelectorAll('.man'+k).forEach(e=>e.hidden=!$('#man'+k).checked);return}
-  recrop(k); // keeps the current rect as the starting selection
+  const on=$('#man'+k).checked;
+  if(!S[k]){document.querySelectorAll('.auto'+k).forEach(e=>e.hidden=on);
+            document.querySelectorAll('.man'+k).forEach(e=>e.hidden=!on);return}
+  if(on){ S[k].editing=true; render(k); }   // start editing from the current rect
+  else { S[k].editing=false; recrop(k); }   // back to auto
 });
 
 // --- compose ---------------------------------------------------------------
