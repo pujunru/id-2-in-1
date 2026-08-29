@@ -28,6 +28,10 @@ download this repo and open `index.html` from disk — it works fully offline.
 2. Drop, paste, or click to load them into the Front and Back panels.
 3. Each side is auto-cropped from the scanner background. Use **Rotate 90°** for
    sideways scans, or adjust **Edge sens.** and hit **Re-crop** if the crop is off.
+   For full control, tick **Manual crop**: the whole scan is shown with a
+   selection box you can drag, resize from any corner, or redraw by dragging on
+   an empty area. It starts from whatever auto-crop found, follows the image when
+   you rotate, and **Reset to full** restores the entire scan.
 4. Set your page options and click **Build page**.
 5. Download as PNG or PDF.
 

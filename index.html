@@ -38,6 +38,13 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
 .item .nm{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .st{font-size:12px;color:var(--mut)}
 .item .st.err{color:#dc2626}
+.cropwrap{position:relative;display:inline-block;line-height:0;touch-action:none}
+.cropwrap.manual{cursor:crosshair}
+.shade{position:absolute;inset:0;pointer-events:none}
+.selbox{position:absolute;border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 0 0 9999px rgba(0,0,0,.42);pointer-events:none}
+.hand{position:absolute;width:12px;height:12px;background:#fff;border:1px solid rgba(0,0,0,.55);border-radius:2px;pointer-events:auto}
+.hand.nw{cursor:nwse-resize}.hand.ne{cursor:nesw-resize}.hand.sw{cursor:nesw-resize}.hand.se{cursor:nwse-resize}
+.selbox .inner{position:absolute;inset:0;cursor:move;pointer-events:auto}
 .warn{margin-top:12px;padding:10px 12px;border-radius:8px;border:1px solid #f0c36d;background:#fdf6e3;color:#7a5b09;font-size:13px}
 @media(prefers-color-scheme:dark){.warn{background:#2a2416;border-color:#5c4a1e;color:#e8c97a}}
 #out{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff}
@@ -62,8 +69,10 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
       <div class="drop" id="dropA"><span>Click or drop image</span></div>
       <div class="row">
         <button data-rot="A">Rotate 90°</button>
-        <label class="f">Edge sens. <input type="range" id="thA" min="4" max="60" value="18"></label>
-        <button data-re="A">Re-crop</button>
+        <label class="f"><input type="checkbox" id="manA"> Manual crop</label>
+        <label class="f autoA">Edge sens. <input type="range" id="thA" min="4" max="60" value="18"></label>
+        <button data-re="A" class="autoA">Re-crop</button>
+        <button data-reset="A" class="manA" hidden>Reset to full</button>
       </div>
     </div>
     <div class="card">
@@ -71,8 +80,10 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
       <div class="drop" id="dropB"><span>Click or drop image</span></div>
       <div class="row">
         <button data-rot="B">Rotate 90°</button>
-        <label class="f">Edge sens. <input type="range" id="thB" min="4" max="60" value="18"></label>
-        <button data-re="B">Re-crop</button>
+        <label class="f"><input type="checkbox" id="manB"> Manual crop</label>
+        <label class="f autoB">Edge sens. <input type="range" id="thB" min="4" max="60" value="18"></label>
+        <button data-re="B" class="autoB">Re-crop</button>
+        <button data-reset="B" class="manB" hidden>Reset to full</button>
       </div>
     </div>
   </div>
@@ -90,7 +101,7 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
   </div>
 
   <div id="outWrap"><canvas id="out"></canvas>
-    <p class="note">Auto-crop finds the card by scanning in from the scanner background (usually white/black) and trims to the first strong edge, then squares up the result. If it grabs too much or too little, nudge <em>Edge sens.</em> and hit Re-crop.</p>
+    <p class="note">Auto-crop finds the card by scanning in from the scanner background (usually white/black) and trims to the first strong edge. If it grabs too much or too little, nudge <em>Edge sens.</em> and hit Re-crop &mdash; or tick <em>Manual crop</em> and drag a box on the preview to set it yourself.</p>
   </div>
 </section>
 
@@ -191,29 +202,141 @@ function autoCrop(cv,thresh){
   const w=x1-x0+1,h=y1-y0+1;
   const o=document.createElement('canvas'); o.width=w;o.height=h;
   o.getContext('2d').drawImage(cv,x0,y0,w,h,0,0,w,h);
+  o.__rect={x:x0,y:y0,w,h}; // let the caller reuse this as an editable rect
   return o;
 }
 
-function recrop(key){
+// crop rect is stored in ROTATED-SOURCE pixel coords, so rotation & re-crop stay correct
+function applyCrop(key){
+  const st=S[key], src=srcCanvas(key), r=st.rect;
+  const o=document.createElement('canvas');
+  o.width=Math.max(1,Math.round(r.w)); o.height=Math.max(1,Math.round(r.h));
+  o.getContext('2d').drawImage(src,Math.round(r.x),Math.round(r.y),o.width,o.height,0,0,o.width,o.height);
+  st.canvas=o;
+}
+
+function recrop(key,mode){
   if(!S[key])return;
-  const th=+$('#th'+key).value;
-  const cropped=autoCrop(srcCanvas(key),th);
-  S[key].canvas=cropped;
-  const host=$('#drop'+key);
-  host.innerHTML='';
-  const view=document.createElement('canvas');
-  const sc=Math.min(420/cropped.width,260/cropped.height,1);
-  view.width=cropped.width*sc|0; view.height=cropped.height*sc|0;
-  view.getContext('2d').drawImage(cropped,0,0,view.width,view.height);
-  host.appendChild(view);
+  const st=S[key], src=srcCanvas(key);
+  const manual=$('#man'+key).checked;
+  if(mode==='full'){
+    st.rect={x:0,y:0,w:src.width,h:src.height};
+  } else if(!manual||!st.rect){
+    // auto: derive the rect by matching autoCrop's output against the source
+    const c=autoCrop(src,+$('#th'+key).value);
+    st.rect=c.__rect||{x:0,y:0,w:c.width,h:c.height};
+  }
+  applyCrop(key);
+  render(key);
   $('#build').disabled=!(S.A&&S.B);
 }
 
+function render(key){
+  const st=S[key], src=srcCanvas(key), manual=$('#man'+key).checked;
+  const host=$('#drop'+key);
+  host.innerHTML='';
+  const wrap=document.createElement('div');
+  wrap.className='cropwrap'+(manual?' manual':'');
+
+  // in manual mode show the WHOLE scan so the box can be placed anywhere
+  const shown=manual?src:st.canvas;
+  const sc=Math.min(420/shown.width,260/shown.height,1);
+  const view=document.createElement('canvas');
+  view.width=Math.round(shown.width*sc); view.height=Math.round(shown.height*sc);
+  view.getContext('2d').drawImage(shown,0,0,view.width,view.height);
+  wrap.appendChild(view);
+  host.appendChild(wrap);
+  st.view={sc,w:view.width,h:view.height};
+
+  document.querySelectorAll('.auto'+key).forEach(e=>e.hidden=manual);
+  document.querySelectorAll('.man'+key).forEach(e=>e.hidden=!manual);
+  if(manual) attachBox(key,wrap);
+}
+
+function attachBox(key,wrap){
+  const st=S[key], sc=st.view.sc;
+  const box=document.createElement('div'); box.className='selbox';
+  const inner=document.createElement('div'); inner.className='inner'; box.appendChild(inner);
+  const hs={};
+  for(const p of ['nw','ne','sw','se']){
+    const h=document.createElement('div'); h.className='hand '+p; hs[p]=h; box.appendChild(h);
+  }
+  wrap.appendChild(box);
+
+  const paint=()=>{
+    const r=st.rect;
+    const x=r.x*sc, y=r.y*sc, w=r.w*sc, h=r.h*sc;
+    box.style.left=x+'px'; box.style.top=y+'px';
+    box.style.width=w+'px'; box.style.height=h+'px';
+    hs.nw.style.cssText+=';left:-6px;top:-6px'; hs.ne.style.cssText+=';right:-6px;top:-6px';
+    hs.sw.style.cssText+=';left:-6px;bottom:-6px'; hs.se.style.cssText+=';right:-6px;bottom:-6px';
+  };
+  paint();
+
+  const src=srcCanvas(key);
+  const clamp=r=>{
+    r.w=Math.max(8,r.w); r.h=Math.max(8,r.h);
+    r.x=Math.min(Math.max(0,r.x),src.width-r.w);
+    r.y=Math.min(Math.max(0,r.y),src.height-r.h);
+    r.w=Math.min(r.w,src.width-r.x); r.h=Math.min(r.h,src.height-r.y);
+    return r;
+  };
+  const pos=e=>{
+    const b=wrap.getBoundingClientRect();
+    return {x:(e.clientX-b.left)/sc, y:(e.clientY-b.top)/sc};
+  };
+
+  let drag=null;
+  const start=(e,mode)=>{
+    e.preventDefault(); e.stopPropagation();
+    drag={mode,from:pos(e),orig:{...st.rect}};
+    wrap.setPointerCapture&&wrap.setPointerCapture(e.pointerId);
+  };
+  inner.addEventListener('pointerdown',e=>start(e,'move'));
+  for(const p of ['nw','ne','sw','se']) hs[p].addEventListener('pointerdown',e=>start(e,p));
+  // dragging on bare image starts a fresh box
+  wrap.addEventListener('pointerdown',e=>{
+    if(e.target!==wrap&&e.target.tagName!=='CANVAS')return;
+    const q=pos(e); st.rect={x:q.x,y:q.y,w:8,h:8}; start(e,'se');
+  });
+
+  wrap.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    const q=pos(e), dx=q.x-drag.from.x, dy=q.y-drag.from.y, o=drag.orig;
+    let r;
+    if(drag.mode==='move') r={x:o.x+dx,y:o.y+dy,w:o.w,h:o.h};
+    else{
+      let x0=o.x,y0=o.y,x1=o.x+o.w,y1=o.y+o.h;
+      if(drag.mode.includes('n'))y0=o.y+dy; if(drag.mode.includes('s'))y1=o.y+o.h+dy;
+      if(drag.mode.includes('w'))x0=o.x+dx; if(drag.mode.includes('e'))x1=o.x+o.w+dx;
+      r={x:Math.min(x0,x1),y:Math.min(y0,y1),w:Math.abs(x1-x0),h:Math.abs(y1-y0)};
+    }
+    st.rect=clamp(r); paint();
+  });
+  const stop=()=>{ if(!drag)return; drag=null; applyCrop(key); };
+  wrap.addEventListener('pointerup',stop);
+  wrap.addEventListener('pointercancel',stop);
+}
+
 document.querySelectorAll('[data-rot]').forEach(b=>b.onclick=e=>{
-  const k=b.dataset.rot; if(!S[k])return; S[k].rot=(S[k].rot+90)%360; recrop(k);
+  const k=b.dataset.rot; if(!S[k])return;
+  const before=srcCanvas(k);
+  S[k].rot=(S[k].rot+90)%360;
+  if($('#man'+k).checked&&S[k].rect){
+    // rotate the rect 90° CW with the image so the selection follows the card
+    const r=S[k].rect;
+    S[k].rect={x:before.height-(r.y+r.h), y:r.x, w:r.h, h:r.w};
+    applyCrop(k); render(k);
+  } else recrop(k);
 });
 document.querySelectorAll('[data-re]').forEach(b=>b.onclick=()=>recrop(b.dataset.re));
+document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>recrop(b.dataset.reset,'full'));
 $('#thA').oninput=()=>recrop('A'); $('#thB').oninput=()=>recrop('B');
+['A','B'].forEach(k=>$('#man'+k).onchange=()=>{
+  if(!S[k]){document.querySelectorAll('.auto'+k).forEach(e=>e.hidden=$('#man'+k).checked);
+            document.querySelectorAll('.man'+k).forEach(e=>e.hidden=!$('#man'+k).checked);return}
+  recrop(k); // keeps the current rect as the starting selection
+});
 
 // --- compose ---------------------------------------------------------------
 function build(){
