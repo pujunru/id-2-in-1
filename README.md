@@ -34,6 +34,11 @@ download this repo and open `index.html` from disk — it works fully offline.
    when you rotate. Press **Apply crop** to confirm — the preview then shows the
    cropped result. **Edit crop** reopens the box, and **Reset to full** restores
    the entire scan.
+
+   For a scan that is skewed or shot at an angle, tick **Free transform** while
+   editing: the four corners become independently draggable. Put one on each
+   corner of the card and press **Apply crop** — the quadrilateral is warped back
+   into a straight rectangle, correcting the skew rather than just boxing it in.
 4. Set your page options and click **Build page**.
 5. Download as PNG or PDF.
 
@@ -65,10 +70,10 @@ color, then scans inward for the first row and column where enough pixels diverg
 from it. This handles a card placed anywhere on the platen, against either a white
 or a dark scanner lid.
 
-It's an axis-aligned trim, so it corrects position but not rotation — a skewed scan
-yields a bounding box with some background in the corners. Straighten the card on
-the glass for best results. If detection fails, the full image is kept rather than
-returning a bad crop.
+Auto-crop is an axis-aligned trim, so it corrects position but not rotation — a
+skewed scan yields a bounding box with some background in the corners. For those,
+use **Manual crop → Free transform**, which corrects skew properly. If detection
+fails, the full image is kept rather than returning a bad crop.
 
 ## HEIC → JPEG
 

@@ -43,6 +43,7 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
 .shade{position:absolute;inset:0;pointer-events:none}
 .selbox{position:absolute;border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 0 0 9999px rgba(0,0,0,.42);pointer-events:none}
 .hand{position:absolute;width:12px;height:12px;background:#fff;border:1px solid rgba(0,0,0,.55);border-radius:2px;pointer-events:auto}
+.hand.q{cursor:move;border-radius:50%;width:13px;height:13px;background:#2563eb;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)}
 .hand.nw{cursor:nwse-resize}.hand.ne{cursor:nesw-resize}.hand.sw{cursor:nesw-resize}.hand.se{cursor:nwse-resize}
 .selbox .inner{position:absolute;inset:0;cursor:move;pointer-events:auto}
 .warn{margin-top:12px;padding:10px 12px;border-radius:8px;border:1px solid #f0c36d;background:#fdf6e3;color:#7a5b09;font-size:13px}
@@ -72,6 +73,7 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
         <label class="f"><input type="checkbox" id="manA"> Manual crop</label>
         <label class="f autoA">Edge sens. <input type="range" id="thA" min="4" max="60" value="18"></label>
         <button data-re="A" class="autoA">Re-crop</button>
+        <label class="f manA" hidden><input type="checkbox" id="freeA"> Free transform</label>
         <button data-apply="A" class="manA" hidden>Apply crop</button>
         <button data-edit="A" class="manA" hidden>Edit crop</button>
         <button data-reset="A" class="manA" hidden>Reset to full</button>
@@ -85,6 +87,7 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
         <label class="f"><input type="checkbox" id="manB"> Manual crop</label>
         <label class="f autoB">Edge sens. <input type="range" id="thB" min="4" max="60" value="18"></label>
         <button data-re="B" class="autoB">Re-crop</button>
+        <label class="f manB" hidden><input type="checkbox" id="freeB"> Free transform</label>
         <button data-apply="B" class="manB" hidden>Apply crop</button>
         <button data-edit="B" class="manB" hidden>Edit crop</button>
         <button data-reset="B" class="manB" hidden>Reset to full</button>
@@ -216,9 +219,83 @@ function autoCrop(cv,thresh){
   return o;
 }
 
+// --- perspective (free transform) -----------------------------------------
+// Solve the 8 unknowns of the homography mapping dst corners -> src corners,
+// then sample the output pixel by pixel. Small enough to need no library.
+function solve8(A,b){
+  const n=8;
+  for(let i=0;i<n;i++){
+    let p=i;
+    for(let j=i+1;j<n;j++) if(Math.abs(A[j][i])>Math.abs(A[p][i])) p=j;
+    [A[i],A[p]]=[A[p],A[i]]; [b[i],b[p]]=[b[p],b[i]];
+    if(Math.abs(A[i][i])<1e-12) return null;
+    for(let j=i+1;j<n;j++){
+      const f=A[j][i]/A[i][i];
+      for(let k=i;k<n;k++) A[j][k]-=f*A[i][k];
+      b[j]-=f*b[i];
+    }
+  }
+  const x=new Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){
+    let sum=b[i];
+    for(let k=i+1;k<n;k++) sum-=A[i][k]*x[k];
+    x[i]=sum/A[i][i];
+  }
+  return x;
+}
+// dst (rectangle corners) -> src (quad corners)
+function homography(dst,src){
+  const A=[],b=[];
+  for(let i=0;i<4;i++){
+    const {x:X,y:Y}=dst[i], {x:u,y:v}=src[i];
+    A.push([X,Y,1,0,0,0,-X*u,-Y*u]); b.push(u);
+    A.push([0,0,0,X,Y,1,-X*v,-Y*v]); b.push(v);
+  }
+  return solve8(A,b);
+}
+function quadSize(q){
+  const d=(a,b)=>Math.hypot(q[a].x-q[b].x,q[a].y-q[b].y);
+  return { w:Math.round(Math.max(d(0,1),d(3,2))), h:Math.round(Math.max(d(0,3),d(1,2))) };
+}
+// Warp the quad in `src` onto a straight w×h canvas (bilinear sampling).
+function warpQuad(src,quad,w,h){
+  const H=homography([{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}],quad);
+  const out=document.createElement('canvas'); out.width=w; out.height=h;
+  if(!H){ out.getContext('2d').drawImage(src,0,0,w,h); return out; }
+  const sc=src.getContext('2d',{willReadFrequently:true}).getImageData(0,0,src.width,src.height);
+  const sd=sc.data, sw=src.width, sh=src.height;
+  const octx=out.getContext('2d'), od=octx.createImageData(w,h), dd=od.data;
+  const [a,bb,c,d,e,f,g,hh]=H;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const den=g*x+hh*y+1;
+      const u=(a*x+bb*y+c)/den, v=(d*x+e*y+f)/den;
+      const i=(y*w+x)*4;
+      if(u<0||v<0||u>sw-1||v>sh-1){ dd[i]=dd[i+1]=dd[i+2]=255; dd[i+3]=255; continue; }
+      const x0=u|0, y0=v|0, x1=Math.min(x0+1,sw-1), y1=Math.min(y0+1,sh-1);
+      const fx=u-x0, fy=v-y0;
+      for(let ch=0;ch<3;ch++){
+        const p00=sd[(y0*sw+x0)*4+ch], p10=sd[(y0*sw+x1)*4+ch];
+        const p01=sd[(y1*sw+x0)*4+ch], p11=sd[(y1*sw+x1)*4+ch];
+        dd[i+ch]=(p00*(1-fx)+p10*fx)*(1-fy)+(p01*(1-fx)+p11*fx)*fy;
+      }
+      dd[i+3]=255;
+    }
+  }
+  octx.putImageData(od,0,0);
+  return out;
+}
+const rectToQuad=r=>[{x:r.x,y:r.y},{x:r.x+r.w,y:r.y},{x:r.x+r.w,y:r.y+r.h},{x:r.x,y:r.y+r.h}];
+
 // crop rect is stored in ROTATED-SOURCE pixel coords, so rotation & re-crop stay correct
 function applyCrop(key){
-  const st=S[key], src=srcCanvas(key), r=st.rect;
+  const st=S[key], src=srcCanvas(key);
+  if(st.free&&st.quad){
+    const {w,h}=quadSize(st.quad);
+    st.canvas=warpQuad(src,st.quad,Math.max(8,w),Math.max(8,h)); // straightens skew
+    return;
+  }
+  const r=st.rect;
   const o=document.createElement('canvas');
   o.width=Math.max(1,Math.round(r.w)); o.height=Math.max(1,Math.round(r.h));
   o.getContext('2d').drawImage(src,Math.round(r.x),Math.round(r.y),o.width,o.height,0,0,o.width,o.height);
@@ -263,6 +340,7 @@ function render(key){
   document.querySelectorAll('.auto'+key).forEach(e=>e.hidden=manual);
   document.querySelectorAll('.man'+key).forEach(e=>e.hidden=!manual);
   // Apply only while editing; Edit/Reset only once a crop is committed
+  const fb=$('#free'+key); if(fb){fb.checked=!!st.free; fb.closest('label').hidden=!editing;}
   const ab=document.querySelector('[data-apply='+key+']');
   const eb=document.querySelector('[data-edit='+key+']');
   const rb=document.querySelector('[data-reset='+key+']');
@@ -273,7 +351,8 @@ function render(key){
     p.className='st'+(editing?'':' done');
     p.style.cssText='font-size:12px;margin-top:8px;color:'+(editing?'var(--mut)':'#16a34a');
     p.textContent=editing
-      ? 'Drag to adjust, then press Apply crop.'
+      ? (st.free?'Drag each corner onto the card, then press Apply crop.'
+               :'Drag to adjust, then press Apply crop.')
       : '✓ Cropped to '+st.canvas.width+'×'+st.canvas.height+' px';
     host.parentNode.insertBefore(p,host.nextSibling); st.hint=p;
   }
@@ -281,26 +360,54 @@ function render(key){
 }
 
 function attachBox(key,wrap){
-  const st=S[key], sc=st.view.sc;
+  const st=S[key], sc=st.view.sc, src=srcCanvas(key);
+  const free=st.free;
+  if(free&&!st.quad) st.quad=rectToQuad(st.rect);
+
   const box=document.createElement('div'); box.className='selbox';
   const inner=document.createElement('div'); inner.className='inner'; box.appendChild(inner);
   const hs={};
-  for(const p of ['nw','ne','sw','se']){
-    const h=document.createElement('div'); h.className='hand '+p; hs[p]=h; box.appendChild(h);
+  const names=free?['0','1','2','3']:['nw','ne','sw','se'];
+  for(const p of names){
+    const h=document.createElement('div'); h.className='hand '+(free?'q':p); hs[p]=h;
   }
   wrap.appendChild(box);
+  // in free mode the handles float over the image, not on the box
+  const layer=free?wrap:box;
+  for(const p of names) layer.appendChild(hs[p]);
+
+  let svg=null;
+  if(free){
+    svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('class','quad');
+    svg.style.cssText='position:absolute;inset:0;pointer-events:none;overflow:visible';
+    svg.innerHTML='<polygon fill="rgba(37,99,235,.14)" stroke="#fff" stroke-width="1.5" '+
+                  'vector-effect="non-scaling-stroke" style="filter:drop-shadow(0 0 1px rgba(0,0,0,.6))"/>';
+    wrap.appendChild(svg);
+    box.style.display='none';
+  }
 
   const paint=()=>{
+    if(free){
+      const q=st.quad;
+      svg.setAttribute('viewBox','0 0 '+st.view.w+' '+st.view.h);
+      svg.style.width=st.view.w+'px'; svg.style.height=st.view.h+'px';
+      svg.querySelector('polygon').setAttribute('points',
+        q.map(p=>(p.x*sc)+','+(p.y*sc)).join(' '));
+      names.forEach((n,i)=>{
+        hs[n].style.left=(q[i].x*sc-6)+'px';
+        hs[n].style.top=(q[i].y*sc-6)+'px';
+      });
+      return;
+    }
     const r=st.rect;
-    const x=r.x*sc, y=r.y*sc, w=r.w*sc, h=r.h*sc;
-    box.style.left=x+'px'; box.style.top=y+'px';
-    box.style.width=w+'px'; box.style.height=h+'px';
+    box.style.left=(r.x*sc)+'px'; box.style.top=(r.y*sc)+'px';
+    box.style.width=(r.w*sc)+'px'; box.style.height=(r.h*sc)+'px';
     hs.nw.style.cssText+=';left:-6px;top:-6px'; hs.ne.style.cssText+=';right:-6px;top:-6px';
     hs.sw.style.cssText+=';left:-6px;bottom:-6px'; hs.se.style.cssText+=';right:-6px;bottom:-6px';
   };
   paint();
 
-  const src=srcCanvas(key);
   const clamp=r=>{
     r.w=Math.max(8,r.w); r.h=Math.max(8,r.h);
     r.x=Math.min(Math.max(0,r.x),src.width-r.w);
@@ -316,13 +423,12 @@ function attachBox(key,wrap){
   let drag=null;
   const start=(e,mode)=>{
     e.preventDefault(); e.stopPropagation();
-    drag={mode,from:pos(e),orig:{...st.rect}};
+    drag={mode,from:pos(e),orig:free?st.quad.map(p=>({...p})):{...st.rect}};
     wrap.setPointerCapture&&wrap.setPointerCapture(e.pointerId);
   };
-  inner.addEventListener('pointerdown',e=>start(e,'move'));
-  for(const p of ['nw','ne','sw','se']) hs[p].addEventListener('pointerdown',e=>start(e,p));
-  // dragging on bare image starts a fresh box
-  wrap.addEventListener('pointerdown',e=>{
+  if(!free) inner.addEventListener('pointerdown',e=>start(e,'move'));
+  names.forEach((n,i)=>hs[n].addEventListener('pointerdown',e=>start(e,free?i:n)));
+  if(!free) wrap.addEventListener('pointerdown',e=>{
     if(e.target!==wrap&&e.target.tagName!=='CANVAS')return;
     const q=pos(e); st.rect={x:q.x,y:q.y,w:8,h:8}; start(e,'se');
   });
@@ -330,6 +436,14 @@ function attachBox(key,wrap){
   wrap.addEventListener('pointermove',e=>{
     if(!drag)return;
     const q=pos(e), dx=q.x-drag.from.x, dy=q.y-drag.from.y, o=drag.orig;
+    if(free){
+      // each corner moves independently, clamped to the image
+      const i=drag.mode;
+      st.quad=o.map(p=>({...p}));
+      st.quad[i]={ x:Math.min(Math.max(0,o[i].x+dx),src.width),
+                   y:Math.min(Math.max(0,o[i].y+dy),src.height) };
+      paint(); return;
+    }
     let r;
     if(drag.mode==='move') r={x:o.x+dx,y:o.y+dy,w:o.w,h:o.h};
     else{
@@ -342,26 +456,45 @@ function attachBox(key,wrap){
   });
   const stop=()=>{ if(!drag)return; drag=null;
     $('#drop'+key).dataset.noPick='1'; // swallow the click this drag will emit
-    applyCrop(key);
-    if(S[key].hint) S[key].hint.textContent='Drag to adjust, then press Apply crop.';
+    if(S[key].hint) S[key].hint.textContent=free
+      ? 'Drag each corner onto the card, then press Apply crop.'
+      : 'Drag to adjust, then press Apply crop.';
   };
   wrap.addEventListener('pointerup',stop);
   wrap.addEventListener('pointercancel',stop);
 }
 
-document.querySelectorAll('[data-rot]').forEach(b=>b.onclick=e=>{
+document.querySelectorAll('[data-rot]').forEach(b=>b.onclick=()=>{
   const k=b.dataset.rot; if(!S[k])return;
   const before=srcCanvas(k);
   S[k].rot=(S[k].rot+90)%360;
   if($('#man'+k).checked&&S[k].rect){
-    // keep whichever state we were in (editing vs applied)
-    // rotate the rect 90° CW with the image so the selection follows the card
+    // rotate the selection 90° CW with the image so it stays on the card
     const r=S[k].rect;
     S[k].rect={x:before.height-(r.y+r.h), y:r.x, w:r.h, h:r.w};
+    if(S[k].quad) S[k].quad=S[k].quad.map(p=>({x:before.height-p.y, y:p.x}));
     applyCrop(k); render(k);
   } else recrop(k);
 });
 document.querySelectorAll('[data-re]').forEach(b=>b.onclick=()=>recrop(b.dataset.re));
+$('#thA').oninput=()=>recrop('A'); $('#thB').oninput=()=>recrop('B');
+
+['A','B'].forEach(k=>{
+  $('#man'+k).onchange=()=>{
+    const on=$('#man'+k).checked;
+    if(!S[k]){document.querySelectorAll('.auto'+k).forEach(e=>e.hidden=on);
+              document.querySelectorAll('.man'+k).forEach(e=>e.hidden=true);return}
+    if(on){ S[k].editing=true; render(k); }   // start editing from the current rect
+    else { S[k].editing=false; S[k].free=false; recrop(k); }
+  };
+  $('#free'+k).onchange=()=>{
+    if(!S[k])return;
+    S[k].free=$('#free'+k).checked;
+    if(S[k].free) S[k].quad=rectToQuad(S[k].rect); // seed corners from the box
+    render(k);
+  };
+});
+
 document.querySelectorAll('[data-apply]').forEach(b=>b.onclick=()=>{
   const k=b.dataset.apply; if(!S[k])return;
   applyCrop(k); S[k].editing=false; render(k);
@@ -374,52 +507,9 @@ document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>{
   const k=b.dataset.reset; if(!S[k])return;
   const src=srcCanvas(k);
   S[k].rect={x:0,y:0,w:src.width,h:src.height};
+  S[k].quad=rectToQuad(S[k].rect);
   applyCrop(k); render(k);
 });
-$('#thA').oninput=()=>recrop('A'); $('#thB').oninput=()=>recrop('B');
-['A','B'].forEach(k=>$('#man'+k).onchange=()=>{
-  const on=$('#man'+k).checked;
-  if(!S[k]){document.querySelectorAll('.auto'+k).forEach(e=>e.hidden=on);
-            document.querySelectorAll('.man'+k).forEach(e=>e.hidden=!on);return}
-  if(on){ S[k].editing=true; render(k); }   // start editing from the current rect
-  else { S[k].editing=false; recrop(k); }   // back to auto
-});
-
-// --- compose ---------------------------------------------------------------
-function build(){
-  const paper=$('#page').value==='a4'?[210,297]:[215.9,279.4];
-  const PW=Math.round(paper[0]*MM),PH=Math.round(paper[1]*MM);
-  const out=$('#out'); out.width=PW; out.height=PH;
-  const c=out.getContext('2d');
-  c.fillStyle='#fff'; c.fillRect(0,0,PW,PH);
-
-  const cw=+$('#cw').value*MM, gap=+$('#gap').value*MM, horiz=$('#layout').value==='h';
-  const box=k=>{const s=S[k].canvas;return {s,w:cw,h:cw*s.height/s.width};};
-  const a=box('A'),b=box('B');
-
-  let totalW,totalH;
-  if(horiz){totalW=a.w+gap+b.w; totalH=Math.max(a.h,b.h);} else {totalW=Math.max(a.w,b.w); totalH=a.h+gap+b.h;}
-  const marg=Math.max(0,+$('#marg').value||0)*MM; // page margin
-  const sc=Math.min(1,(PW-2*marg)/totalW,(PH-2*marg)/totalH);
-  let ox,oy;
-  if($('#place').value==='tl'){ ox=marg; oy=marg; }
-  else { ox=(PW-totalW*sc)/2; oy=(PH-totalH*sc)/2; }
-
-  const draw=(o,x,y)=>{
-    c.drawImage(o.s,x,y,o.w*sc,o.h*sc);
-  };
-  if(horiz){ draw(a,ox,oy+(totalH-a.h)*sc/2); draw(b,ox+(a.w+gap)*sc,oy+(totalH-b.h)*sc/2); }
-  else { draw(a,ox+(totalW-a.w)*sc/2,oy); draw(b,ox+(totalW-b.w)*sc/2,oy+(a.h+gap)*sc); }
-
-  out.style.width='100%';
-  $('#png').disabled=false; $('#pdf').disabled=false;
-}
-$('#build').onclick=build;
-['page','layout','place','cw','gap','marg'].forEach(id=>$('#'+id).onchange=()=>{if(!$('#png').disabled)build();});
-
-$('#png').onclick=()=>{
-  $('#out').toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='id-2-in-1.png';a.click();},'image/png');
-};
 
 // --- tabs -----------------------------------------------------------------
 function showTab(which){
@@ -544,6 +634,42 @@ async function convertHeic(files){
     const u=URL.createObjectURL(it.blob);const l=document.createElement('a');l.href=u;l.download=it.name;l.click();setTimeout(()=>URL.revokeObjectURL(u),1000);
   },i*300));
 })();
+
+// --- compose ---------------------------------------------------------------
+function build(){
+  const paper=$('#page').value==='a4'?[210,297]:[215.9,279.4];
+  const PW=Math.round(paper[0]*MM),PH=Math.round(paper[1]*MM);
+  const out=$('#out'); out.width=PW; out.height=PH;
+  const c=out.getContext('2d');
+  c.fillStyle='#fff'; c.fillRect(0,0,PW,PH);
+
+  const cw=+$('#cw').value*MM, gap=+$('#gap').value*MM, horiz=$('#layout').value==='h';
+  const box=k=>{const s=S[k].canvas;return {s,w:cw,h:cw*s.height/s.width};};
+  const a=box('A'),b=box('B');
+
+  let totalW,totalH;
+  if(horiz){totalW=a.w+gap+b.w; totalH=Math.max(a.h,b.h);} else {totalW=Math.max(a.w,b.w); totalH=a.h+gap+b.h;}
+  const marg=Math.max(0,+$('#marg').value||0)*MM; // page margin
+  const sc=Math.min(1,(PW-2*marg)/totalW,(PH-2*marg)/totalH);
+  let ox,oy;
+  if($('#place').value==='tl'){ ox=marg; oy=marg; }
+  else { ox=(PW-totalW*sc)/2; oy=(PH-totalH*sc)/2; }
+
+  const draw=(o,x,y)=>{
+    c.drawImage(o.s,x,y,o.w*sc,o.h*sc);
+  };
+  if(horiz){ draw(a,ox,oy+(totalH-a.h)*sc/2); draw(b,ox+(a.w+gap)*sc,oy+(totalH-b.h)*sc/2); }
+  else { draw(a,ox+(totalW-a.w)*sc/2,oy); draw(b,ox+(totalW-b.w)*sc/2,oy+(a.h+gap)*sc); }
+
+  out.style.width='100%';
+  $('#png').disabled=false; $('#pdf').disabled=false;
+}
+$('#build').onclick=build;
+['page','layout','place','cw','gap','marg'].forEach(id=>$('#'+id).onchange=()=>{if(!$('#png').disabled)build();});
+
+$('#png').onclick=()=>{
+  $('#out').toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='id-2-in-1.png';a.click();},'image/png');
+};
 
 // minimal single-image PDF writer (no deps)
 $('#pdf').onclick=()=>{
