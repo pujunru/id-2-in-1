@@ -1,9 +1,10 @@
 # ID 2-in-1
 
-Two browser-based image tools that never upload your files:
+Three browser-based image tools that never upload your files:
 
 1. **ID 2-in-1** — combine two scans of an ID card (front and back) onto a single printable page.
-2. **HEIC → JPEG** — batch-convert iPhone HEIC/HEIF photos to JPEG.
+2. **Visa photo 4×6** — crop one 2 × 2 in passport/visa photo and repeat it on a standard 4 × 6 in print.
+3. **HEIC → JPEG** — batch-convert iPhone HEIC/HEIF photos to JPEG.
 
 **[Open the tool →](https://pujunru.github.io/id-2-in-1/)**
 
@@ -74,6 +75,39 @@ Auto-crop is an axis-aligned trim, so it corrects position but not rotation — 
 skewed scan yields a bounding box with some background in the corners. For those,
 use **Manual crop → Free transform**, which corrects skew properly. If detection
 fails, the full image is kept rather than returning a bad crop.
+
+## Visa photo 4×6
+
+1. Open the **Visa photo 4×6** tab and drop, paste, or pick a photo (HEIC works too).
+2. A square crop box appears. Drag it to move, or drag a corner to resize — it
+   always stays square. The optional **US head-size guide** overlays the US
+   passport/visa rules: eyes inside the green band (1⅛–1⅜ in from the bottom),
+   head between the two ovals (1–1⅜ in tall).
+3. Choose the sheet orientation and how many copies, then download.
+
+| Option | Notes |
+| --- | --- |
+| **Sheet** | 6 × 4 in landscape or 4 × 6 in portrait. Same paper, either way up. |
+| **Copies** | 6 fills the sheet edge to edge. 4 leaves a gap between columns. 2 keeps clear of every paper edge. |
+| **Spacing** | Gap between photos where there is room for one. Never shrinks the photos. |
+
+### Exactly 2 × 2 in
+
+The sheet is 1800 × 1200 px at 300 dpi, and each photo is drawn into an exact
+600 × 600 px square at whole-pixel positions — so it is 2.000 × 2.000 in whenever
+the sheet prints at 4 × 6 in. Spacing and centering only ever move photos; they
+are never scaled to fit. The page re-checks the placed squares after every change
+and shows the result under the preview.
+
+The downloads carry the size with them: the JPEG (JFIF density) and PNG (`pHYs`)
+are tagged 300 dpi, and the PDF page is exactly 6 × 4 in.
+
+At a photo lab, order a standard 4×6 print: the 3:2 sheet matches the paper, so
+nothing is cropped. On a home printer, pick 4×6 photo paper, **borderless**, and
+**100% / Actual size**. Because 2 + 2 in fills the 4-inch side, the 6- and 4-copy
+layouts reach the paper edge; use 2 copies if your printer cannot print borderless.
+
+A crop smaller than 600 px still prints at 2 × 2 in, but is enlarged and may look soft.
 
 ## HEIC → JPEG
 
