@@ -61,6 +61,9 @@ page", which will silently resize the card.
 | **Card width** | Physical width in mm. 85.6 mm is standard ID-1. |
 | **Gap** | Space between the two cards. |
 | **Margin** | Exact offset in top-left mode; a minimum in centered mode. |
+| **Auto levels** | Stretches each side so its darkest part prints black and its lightest prints white. The quick fix for dark phone photos. |
+| **Brightness** | Lifts (or darkens) the midtones without washing out the whites. |
+| **Contrast** | Pushes text and background further apart. **Reset tone** clears all three. |
 
 Below ~5 mm of margin, many printers will clip the edge with their non-printable border.
 

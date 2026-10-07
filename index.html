@@ -109,12 +109,17 @@ nav.tabs button[aria-selected=true]{color:var(--acc);border-bottom-color:var(--a
     <label class="f">Card width <input type="number" id="cw" value="85.6" step="0.1" style="width:70px"> mm</label>
     <label class="f">Gap <input type="number" id="gap" value="10" step="1" style="width:56px"> mm</label>
     <label class="f">Margin <input type="number" id="marg" value="12" step="1" min="0" style="width:56px"> mm</label>
+    <label class="f"><input type="checkbox" id="tAuto"> Auto levels</label>
+    <label class="f">Brightness <input type="range" id="tBri" min="-100" max="100" value="0"></label>
+    <label class="f">Contrast <input type="range" id="tCon" min="-100" max="100" value="0"></label>
+    <button id="tReset">Reset tone</button>
     <button class="p" id="build" disabled>Build page</button>
     <button id="png" disabled>Download PNG</button>
     <button id="pdf" disabled>Download PDF</button>
   </div>
 
   <div id="outWrap"><canvas id="out"></canvas>
+    <p class="note"><em>Auto levels</em> stretches each side so its darkest part prints black and its lightest prints white &mdash; the quickest fix for dark phone photos. <em>Brightness</em> lifts the midtones without washing out the whites; <em>Contrast</em> separates text from background. The previews and the page update as you drag.</p>
     <p class="note">Auto-crop finds the card by scanning in from the scanner background (usually white/black) and trims to the first strong edge. If it grabs too much or too little, nudge <em>Edge sens.</em> and hit Re-crop &mdash; or tick <em>Manual crop</em> and drag a box on the preview to set it yourself.</p>
   </div>
 </section>
@@ -376,6 +381,7 @@ function render(key){
   const view=document.createElement('canvas');
   view.width=Math.round(shown.width*sc); view.height=Math.round(shown.height*sc);
   view.getContext('2d').drawImage(shown,0,0,view.width,view.height);
+  toneRect(view.getContext('2d'),toneLut(key),0,0,view.width,view.height);
   wrap.appendChild(view);
   host.appendChild(wrap);
   st.view={sc,w:view.width,h:view.height};
@@ -682,6 +688,59 @@ async function convertHeic(files){
   },i*300));
 })();
 
+// --- tone (auto levels / brightness / contrast) ----------------------------
+// One 256-entry lookup table per side, applied equally to R, G and B so the
+// colours don't shift. Order: stretch levels -> gamma (brightness) -> contrast.
+const levelCache=new WeakMap(); // cropped canvas -> {lo,hi}
+function levels(cv){
+  if(levelCache.has(cv)) return levelCache.get(cv);
+  // histogram a small copy; plenty to find the 0.5% / 99.5% points
+  const sc=Math.min(1,400/Math.max(cv.width,cv.height));
+  const w=Math.max(1,Math.round(cv.width*sc)), h=Math.max(1,Math.round(cv.height*sc));
+  const t=document.createElement('canvas'); t.width=w; t.height=h;
+  const tx=t.getContext('2d',{willReadFrequently:true}); tx.drawImage(cv,0,0,w,h);
+  const d=tx.getImageData(0,0,w,h).data, hist=new Uint32Array(256);
+  for(let p=0;p<d.length;p+=4) hist[Math.round(d[p]*0.299+d[p+1]*0.587+d[p+2]*0.114)]++;
+  const n=w*h, cut=n*0.005;
+  let lo=0,hi=255,acc=0;
+  for(;lo<255;lo++){acc+=hist[lo]; if(acc>cut)break;}
+  for(acc=0;hi>0;hi--){acc+=hist[hi]; if(acc>cut)break;}
+  if(hi-lo<16){lo=0;hi=255;} // flat image: leave it alone
+  const r={lo,hi}; levelCache.set(cv,r); return r;
+}
+function toneLut(key){
+  const auto=$('#tAuto').checked, bri=+$('#tBri').value, con=+$('#tCon').value;
+  if(!auto&&!bri&&!con) return null;
+  const {lo,hi}=auto?levels(S[key].canvas):{lo:0,hi:255};
+  const gam=Math.pow(2,-bri/50);  // +100 -> 0.25 (much lighter), -100 -> 4
+  const k=Math.pow(2,con/50);     // +100 -> 4x, -100 -> 0.25x around mid-grey
+  const lut=new Uint8ClampedArray(256);
+  for(let i=0;i<256;i++){
+    let v=Math.min(1,Math.max(0,(i-lo)/(hi-lo)));
+    v=Math.pow(v,gam);
+    v=(v-0.5)*k+0.5;
+    lut[i]=Math.round(v*255);
+  }
+  return lut;
+}
+function toneRect(ctx,lut,x,y,w,h){
+  if(!lut||w<1||h<1) return;
+  const id=ctx.getImageData(x,y,w,h), d=id.data;
+  for(let p=0;p<d.length;p+=4){ d[p]=lut[d[p]]; d[p+1]=lut[d[p+1]]; d[p+2]=lut[d[p+2]]; }
+  ctx.putImageData(id,x,y);
+}
+let toneRaf=0;
+function retone(){
+  if(toneRaf) return;
+  toneRaf=requestAnimationFrame(()=>{
+    toneRaf=0;
+    ['A','B'].forEach(k=>{ if(S[k]) render(k); });
+    if(!$('#png').disabled) build();
+  });
+}
+['tAuto','tBri','tCon'].forEach(id=>$('#'+id).addEventListener('input',retone));
+$('#tReset').onclick=()=>{ $('#tAuto').checked=false; $('#tBri').value=0; $('#tCon').value=0; retone(); };
+
 // --- compose ---------------------------------------------------------------
 function build(){
   const paper=$('#page').value==='a4'?[210,297]:[215.9,279.4];
@@ -702,11 +761,14 @@ function build(){
   if($('#place').value==='tl'){ ox=marg; oy=marg; }
   else { ox=(PW-totalW*sc)/2; oy=(PH-totalH*sc)/2; }
 
-  const draw=(o,x,y)=>{
-    c.drawImage(o.s,x,y,o.w*sc,o.h*sc);
+  // integer rects so the tone pass covers exactly the drawn card, not the white page
+  const draw=(k,o,x,y)=>{
+    const x0=Math.round(x), y0=Math.round(y), w=Math.round(x+o.w*sc)-x0, h=Math.round(y+o.h*sc)-y0;
+    c.drawImage(o.s,x0,y0,w,h);
+    toneRect(c,toneLut(k),x0,y0,w,h);
   };
-  if(horiz){ draw(a,ox,oy+(totalH-a.h)*sc/2); draw(b,ox+(a.w+gap)*sc,oy+(totalH-b.h)*sc/2); }
-  else { draw(a,ox+(totalW-a.w)*sc/2,oy); draw(b,ox+(totalW-b.w)*sc/2,oy+(a.h+gap)*sc); }
+  if(horiz){ draw('A',a,ox,oy+(totalH-a.h)*sc/2); draw('B',b,ox+(a.w+gap)*sc,oy+(totalH-b.h)*sc/2); }
+  else { draw('A',a,ox+(totalW-a.w)*sc/2,oy); draw('B',b,ox+(totalW-b.w)*sc/2,oy+(a.h+gap)*sc); }
 
   out.style.width='100%';
   $('#png').disabled=false; $('#pdf').disabled=false;
